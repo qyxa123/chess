@@ -50,8 +50,8 @@ def detect_pieces_auto_calibrate(
     
     for row in range(8):
         for col in range(8):
-            # 提取格子中心区域（40%~60%）
-            margin = int(cell_h * 0.4)
+            # 提取格子中心区域（25%~75%，即中心50%）
+            margin = int(cell_h * 0.25)
             y1 = row * cell_h + margin
             y2 = (row + 1) * cell_h - margin
             x1 = col * cell_w + margin
@@ -62,12 +62,9 @@ def detect_pieces_auto_calibrate(
             if cell.size == 0:
                 continue
             
-            # 提取特征（Lab颜色空间的均值和方差）
+            # 提取特征（Lab颜色空间的均值，3维）
             lab = cv2.cvtColor(cell, cv2.COLOR_BGR2LAB)
-            feature = np.concatenate([
-                lab.mean(axis=(0, 1)),  # L, a, b 均值
-                lab.std(axis=(0, 1))     # L, a, b 标准差
-            ])
+            feature = lab.mean(axis=(0, 1))  # L, a, b 均值（3维）
             
             cell_features.append(feature)
             cell_positions.append((row, col))
@@ -235,9 +232,10 @@ def _classify_cells(
             occ = 2
         
         # 计算置信度（距离越小，置信度越高）
-        # 归一化到0~1（使用最大可能距离作为参考）
-        max_dist = np.max(dists)
-        conf = 1.0 - min(min_dist / (max_dist + 1e-6), 1.0)
+        # 使用到所属聚类中心的距离，映射到0~1
+        # 假设最大合理距离为100（Lab空间，L范围0-100）
+        max_reasonable_dist = 100.0
+        conf = max(0.0, min(1.0, 1.0 - (min_dist / max_reasonable_dist)))
         
         occupancy.append(occ)
         confidence.append(conf)

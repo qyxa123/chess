@@ -104,6 +104,32 @@ python scripts/make_check_report.py --outdir out/debug_run
 - 如果显示"✅ PASS：网格线基本贴合格子边"，说明对齐正确
 - 如果显示"❌ FAIL"，请检查ArUco标记是否正确
 
+#### 识别8x8 Empty/Light/Dark
+
+**从warped棋盘识别每格状态：**
+
+```bash
+python scripts/run_occupancy.py --outdir out/debug_run
+```
+
+**输出文件：**
+- `board_states.json` - 每帧的8x8 labels（empty/light/dark）+ confidence
+- `debug/cells_sample/` - 第一帧的64个格子切片（r{row}_c{col}.png）
+- `debug/occupancy_map_0001.png` ... `occupancy_map_0005.png` - 前5帧的占用图
+- `debug/confidence_map_0001.png` ... - 前5帧的置信度热力图
+
+**验收标准：**
+查看 `debug/occupancy_map_0001.png`（标准开局）：
+- ✅ 第8/7行（索引7/6）应该几乎全dark（黑色）
+- ✅ 第2/1行（索引1/0）应该几乎全light（白色）
+- ✅ 中间四行（索引2-5）应该几乎全empty（灰色）
+
+**方法说明：**
+- 第一帧自动校准：rows 0,1,6,7作为"有子样本"，rows 2~5作为"空格样本"
+- 每格提取中心50%区域，使用Lab颜色空间均值（3维）
+- KMeans聚类（K=3），自动确定empty类（与空格样本最接近）
+- light/dark按亮度（L通道）区分
+
 #### 从Warped棋盘帧解码PGN
 
 **从已矫正的棋盘图像生成PGN：**

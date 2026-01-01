@@ -1,35 +1,41 @@
 #!/usr/bin/env python3
 """
 棋子/占用识别模块
-功能：识别每个格子的占用状态（empty/white/black）
+功能：识别每个格子的占用状态（empty/light/dark）
+支持自动校准和KMeans聚类
 """
 
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+from sklearn.cluster import KMeans
+import json
 
 
-def detect_pieces(
+def detect_pieces_auto_calibrate(
     warped_board: np.ndarray,
     frame_idx: int,
-    output_dir: str
-) -> Dict[str, any]:
+    output_dir: str,
+    calibration_data: Optional[Dict] = None
+) -> Tuple[Dict[str, any], Optional[Dict]]:
     """
-    检测棋盘上的棋子
+    检测棋盘上的棋子（自动校准版本）
     
     Args:
-        warped_board: 矫正后的棋盘图像
-        frame_idx: 帧索引
-        output_dir: 输出目录（保存每格切片）
+        warped_board: 矫正后的棋盘图像（800x800）
+        frame_idx: 帧索引（0表示第一帧，用于校准）
+        output_dir: 输出目录
+        calibration_data: 校准数据（None表示需要校准）
     
     Returns:
-        包含8x8格子状态的字典
-        {
-            'occupancy': [[0/1/2, ...], ...],  # 0=空, 1=白, 2=黑
-            'confidence': [[float, ...], ...],  # 每格的置信度
-            'cells': [[cell_image, ...], ...]   # 每格的图像（可选）
+        (board_state, new_calibration_data)
+        board_state: {
+            'occupancy': [[0/1/2, ...], ...],  # 0=empty, 1=light, 2=dark
+            'confidence': [[float, ...], ...],
+            'labels': [['empty'/'light'/'dark', ...], ...]
         }
+        new_calibration_data: 如果frame_idx==0，返回校准数据
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -38,18 +44,14 @@ def detect_pieces(
     cell_h = h // 8
     cell_w = w // 8
     
-    occupancy = []
-    confidence = []
-    cells = []
+    # 提取所有格子的特征
+    cell_features = []
+    cell_positions = []
     
     for row in range(8):
-        occ_row = []
-        conf_row = []
-        cell_row = []
-        
         for col in range(8):
-            # 提取格子区域（留边距避免边界干扰）
-            margin = 2
+            # 提取格子中心区域（40%~60%）
+            margin = int(cell_h * 0.4)
             y1 = row * cell_h + margin
             y2 = (row + 1) * cell_h - margin
             x1 = col * cell_w + margin
@@ -57,63 +59,205 @@ def detect_pieces(
             
             cell = warped_board[y1:y2, x1:x2]
             
-            # 分析格子内容
-            occ, conf = _classify_cell(cell)
+            if cell.size == 0:
+                continue
             
-            occ_row.append(occ)
-            conf_row.append(conf)
-            cell_row.append(cell)
+            # 提取特征（Lab颜色空间的均值和方差）
+            lab = cv2.cvtColor(cell, cv2.COLOR_BGR2LAB)
+            feature = np.concatenate([
+                lab.mean(axis=(0, 1)),  # L, a, b 均值
+                lab.std(axis=(0, 1))     # L, a, b 标准差
+            ])
             
-            # 保存格子图像（用于调试）
-            cell_filename = output_path / f"frame{frame_idx:04d}_r{row}_c{col}.jpg"
-            cv2.imwrite(str(cell_filename), cell)
-        
-        occupancy.append(occ_row)
-        confidence.append(conf_row)
-        cells.append(cell_row)
+            cell_features.append(feature)
+            cell_positions.append((row, col))
     
-    return {
-        'occupancy': occupancy,
-        'confidence': confidence,
-        'cells': cells  # 可选，用于调试
+    cell_features = np.array(cell_features)
+    
+    # 第一帧：校准
+    if frame_idx == 0 or calibration_data is None:
+        calibration_data = _calibrate_from_first_frame(
+            warped_board, cell_features, cell_positions, output_path
+        )
+    
+    # 使用校准数据分类
+    occupancy, confidence, labels = _classify_cells(
+        cell_features, cell_positions, calibration_data
+    )
+    
+    # 保存第一帧的格子切片（用于debug）
+    if frame_idx == 0:
+        cells_dir = output_path / "cells"
+        cells_dir.mkdir(exist_ok=True)
+        for (row, col), label in zip(cell_positions, labels):
+            margin = int(cell_h * 0.4)
+            y1 = row * cell_h + margin
+            y2 = (row + 1) * cell_h - margin
+            x1 = col * cell_w + margin
+            x2 = (col + 1) * cell_w - margin
+            cell = warped_board[y1:y2, x1:x2]
+            cell_filename = cells_dir / f"r{row}_c{col}.png"
+            cv2.imwrite(str(cell_filename), cell)
+    
+    # 构建8x8矩阵
+    occupancy_map = np.zeros((8, 8), dtype=np.int32)
+    confidence_map = np.zeros((8, 8), dtype=np.float32)
+    labels_map = [['empty'] * 8 for _ in range(8)]
+    
+    for (row, col), occ, conf, label in zip(cell_positions, occupancy, confidence, labels):
+        occupancy_map[row, col] = occ
+        confidence_map[row, col] = conf
+        labels_map[row][col] = label
+    
+    board_state = {
+        'occupancy': occupancy_map.tolist(),
+        'confidence': confidence_map.tolist(),
+        'labels': labels_map
     }
+    
+    return board_state, calibration_data
 
 
-def _classify_cell(cell: np.ndarray) -> Tuple[int, float]:
+def _calibrate_from_first_frame(
+    warped_board: np.ndarray,
+    cell_features: np.ndarray,
+    cell_positions: List[Tuple[int, int]],
+    output_path: Path
+) -> Dict:
     """
-    分类单个格子：empty(0) / white(1) / black(2)
+    从第一帧校准：识别empty/light/dark三类
+    
+    策略：
+    - rows 0,1,6,7 作为"piece samples"（有棋子）
+    - rows 2~5 作为"empty samples"（空格子）
+    """
+    # 分离piece samples和empty samples
+    piece_samples = []
+    empty_samples = []
+    
+    for i, (row, col) in enumerate(cell_positions):
+        if row in [0, 1, 6, 7]:
+            piece_samples.append(cell_features[i])
+        elif row in [2, 3, 4, 5]:
+            empty_samples.append(cell_features[i])
+    
+    piece_samples = np.array(piece_samples)
+    empty_samples = np.array(empty_samples)
+    
+    # 对所有格子做KMeans聚类（K=3）
+    kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+    kmeans.fit(cell_features)
+    
+    cluster_centers = kmeans.cluster_centers_
+    cluster_labels = kmeans.labels_
+    
+    # 自动判定哪类是empty
+    # 计算每个聚类中心与empty_samples的平均距离
+    empty_distances = []
+    for center in cluster_centers:
+        dists = np.linalg.norm(empty_samples - center, axis=1)
+        empty_distances.append(np.mean(dists))
+    
+    empty_cluster_idx = np.argmin(empty_distances)
+    
+    # 另外两类按亮度区分light/dark
+    # 使用L通道（Lab的第一个通道）的均值
+    remaining_centers = []
+    remaining_indices = []
+    for i in range(3):
+        if i != empty_cluster_idx:
+            remaining_centers.append(cluster_centers[i])
+            remaining_indices.append(i)
+    
+    # 比较L通道（亮度）
+    l_values = [center[0] for center in remaining_centers]  # L是第一个通道
+    if l_values[0] > l_values[1]:
+        light_cluster_idx = remaining_indices[0]
+        dark_cluster_idx = remaining_indices[1]
+    else:
+        light_cluster_idx = remaining_indices[1]
+        dark_cluster_idx = remaining_indices[0]
+    
+    calibration_data = {
+        'cluster_centers': cluster_centers.tolist(),
+        'empty_cluster': int(empty_cluster_idx),
+        'light_cluster': int(light_cluster_idx),
+        'dark_cluster': int(dark_cluster_idx),
+        'empty_samples_mean': empty_samples.mean(axis=0).tolist(),
+        'empty_samples_std': empty_samples.std(axis=0).tolist()
+    }
+    
+    # 保存校准数据
+    calib_path = output_path / "calibration.json"
+    with open(calib_path, 'w', encoding='utf-8') as f:
+        json.dump(calibration_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"  校准完成: empty={empty_cluster_idx}, light={light_cluster_idx}, dark={dark_cluster_idx}")
+    
+    return calibration_data
+
+
+def _classify_cells(
+    cell_features: np.ndarray,
+    cell_positions: List[Tuple[int, int]],
+    calibration_data: Dict
+) -> Tuple[List[int], List[float], List[str]]:
+    """
+    使用校准数据分类每个格子
     
     Returns:
-        (occupancy, confidence)
+        (occupancy_list, confidence_list, labels_list)
     """
-    if cell.size == 0:
-        return 0, 0.0
+    cluster_centers = np.array(calibration_data['cluster_centers'])
+    empty_cluster = calibration_data['empty_cluster']
+    light_cluster = calibration_data['light_cluster']
+    dark_cluster = calibration_data['dark_cluster']
     
-    gray = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY) if len(cell.shape) == 3 else cell
+    occupancy = []
+    confidence = []
+    labels = []
     
-    # 计算平均亮度
-    mean_brightness = np.mean(gray)
+    for feature in cell_features:
+        # 计算到每个聚类中心的距离
+        dists = np.linalg.norm(cluster_centers - feature, axis=1)
+        closest_idx = np.argmin(dists)
+        min_dist = dists[closest_idx]
+        
+        # 映射到类别
+        if closest_idx == empty_cluster:
+            label = 'empty'
+            occ = 0
+        elif closest_idx == light_cluster:
+            label = 'light'
+            occ = 1
+        else:  # dark_cluster
+            label = 'dark'
+            occ = 2
+        
+        # 计算置信度（距离越小，置信度越高）
+        # 归一化到0~1（使用最大可能距离作为参考）
+        max_dist = np.max(dists)
+        conf = 1.0 - min(min_dist / (max_dist + 1e-6), 1.0)
+        
+        occupancy.append(occ)
+        confidence.append(conf)
+        labels.append(label)
     
-    # 计算颜色方差（判断是否有内容）
-    brightness_std = np.std(gray)
-    
-    # 简单阈值分类
-    # TODO: 可以改进为更复杂的分类器
-    
-    if brightness_std < 10:  # 方差很小，可能是空格子或均匀背景
-        # 进一步判断：如果亮度中等，可能是空格子
-        if 80 < mean_brightness < 180:
-            return 0, 0.7  # 空格子，中等置信度
-        else:
-            # 可能是纯色背景，需要更多信息
-            return 0, 0.5
-    
-    # 有内容，根据亮度判断颜色
-    if mean_brightness > 140:
-        return 1, min(0.9, brightness_std / 50.0)  # 白色棋子
-    elif mean_brightness < 100:
-        return 2, min(0.9, brightness_std / 50.0)  # 黑色棋子
-    else:
-        # 中等亮度，可能是空格子或特殊棋子
-        return 0, 0.6
+    return occupancy, confidence, labels
 
+
+def detect_pieces(
+    warped_board: np.ndarray,
+    frame_idx: int,
+    output_dir: str
+) -> Dict[str, any]:
+    """
+    检测棋盘上的棋子（兼容旧接口）
+    """
+    board_state, _ = detect_pieces_auto_calibrate(
+        warped_board=warped_board,
+        frame_idx=frame_idx,
+        output_dir=output_dir,
+        calibration_data=None
+    )
+    return board_state

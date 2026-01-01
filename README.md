@@ -73,6 +73,32 @@ python scripts/run_debug_pipeline.py --input IMG_4504.MOV --outdir out/debug_run
 - 检查标记是否贴在棋盘四角（ID 0=左上, 1=右上, 2=右下, 3=左下）
 - 调整拍摄角度，确保标记不被遮挡
 
+#### 从Warped棋盘帧解码PGN
+
+**从已矫正的棋盘图像生成PGN：**
+
+```bash
+python scripts/run_decode_pgn.py --warped_dir out/debug_run/debug/warped_boards --outdir out/pgn_decode
+```
+
+**可选参数：**
+- `--uncertain_threshold 0.1`：不确定阈值（top1与top2距离差距，默认0.1）
+- `--dist_threshold 2.0`：距离阈值（超过此值则不确定，默认2.0）
+
+**输出文件：**
+- `board_states.json` - 每帧的8x8 labels（empty/light/dark）+ confidence
+- `game.pgn` - 推断的完整PGN（SAN格式）
+- `debug/occupancy_maps/` - 每帧的占用图可视化
+- `debug/diff_heatmaps/` - 相邻帧差分热力图
+- `debug/uncertain_moves.json` - 低置信度步的候选走法
+- `debug/cells/` - 第一帧的每格切片（用于检查分类）
+
+**验收方式：**
+1. 查看 `debug/occupancy_maps/occupancy_map_0000.png` - 应该显示标准开局（第一、二行和第七、八行有棋子）
+2. 查看 `debug/cells/` - 检查每格分类是否正确
+3. 打开 `game.pgn` 在网页回放中验证走法是否合理
+4. 如果有多步不确定，查看 `debug/uncertain_moves.json` 检查候选走法
+
 #### 分析单个视频（完整流程）
 
 ```bash

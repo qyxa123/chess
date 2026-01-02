@@ -164,11 +164,11 @@ def detect_pieces_two_stage(
     
     # 保存第一帧warped图
     if frame_idx == 0 and debug:
-        cv2.imwrite(str(output_path / "board_first_warp.png"), warped_board)
+        cv2.imwrite(str(output_path / "board_first_warp.png"), warped)
     
     # Phase A: piece vs empty
     piece_mask, diff_heatmap, edge_heatmap, metrics = _phase_a_piece_empty(
-        warped_board=warped_board,
+        warped_board=warped,
         frame_idx=frame_idx,
         output_path=output_path,
         patch_ratio=patch_ratio,
@@ -180,7 +180,7 @@ def detect_pieces_two_stage(
     
     # Phase B: light vs dark（只在piece格）
     occupancy, labels, confidence = _phase_b_light_dark(
-        warped_board=warped_board,
+        warped_board=warped,
         piece_mask=piece_mask,
         frame_idx=frame_idx,
         output_path=output_path,
@@ -595,4 +595,29 @@ def detect_pieces_auto_calibrate(
         debug=False
     )
     
-    return result, None  # Returns result and no extra state for now
+    if result is None:
+        return {}, None
+    
+    return result, None
+
+
+def detect_pieces(
+    warped_board: np.ndarray,
+    frame_idx: int,
+    output_dir: str
+) -> Dict[str, any]:
+    """
+    检测棋盘上的棋子（兼容旧接口）
+    """
+    result = detect_pieces_two_stage(
+        warped_board=warped_board,
+        frame_idx=frame_idx,
+        output_dir=output_dir,
+        patch_ratio=0.40,
+        debug=False
+    )
+    
+    if result is None:
+        return {'occupancy': [[0]*8]*8, 'confidence': [[0.0]*8]*8, 'labels': [['empty']*8]*8}
+    
+    return result

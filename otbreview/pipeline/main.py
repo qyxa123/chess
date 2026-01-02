@@ -9,20 +9,14 @@ import json
 
 from .extract import extract_stable_frames
 from .board_detect import detect_and_warp_board
-<<<<<<< HEAD
-from .tag_detector import detect_piece_tags
-from .tag_decode import infer_moves_from_id_grids, load_piece_id_map
-=======
-from .pieces import detect_pieces_tags, detect_pieces_auto_calibrate
-from .decode import decode_moves
->>>>>>> eb1bad1 (Milestone 2: Tag-based piece recognition and Web UI updates)
+from .pieces import detect_pieces, detect_pieces_tags
+from .decode import decode_moves, decode_moves_from_tags
 from .pgn import generate_pgn
 from .analyze import analyze_game
 from .classify import classify_moves
 from .keymoves import find_key_moves
 from otbreview.web.generate import generate_web_replay
-import shutil
-import cv2
+
 
 def analyze_video(
     video_path: str,
@@ -92,108 +86,49 @@ def analyze_video(
     
     print(f"成功定位 {len(warped_boards)} 个棋盘")
     
-<<<<<<< HEAD
-    print("\n=== 步骤3: 标签棋子识别 ===")
-    tag_overlay_dir = debug_dir / "tag_overlays"
-    board_grids = []
-
-    for i, (frame_path, warped) in enumerate(warped_boards):
-        result = detect_piece_tags(
-            warped_board=warped,
-            frame_idx=i,
-            output_dir=tag_overlay_dir
-        )
-        grid_info = {
-            'index': i,
-            'frame': Path(frame_path).name,
-            'board_ids': result.board_ids,
-            'overlay': str(result.overlay_path.relative_to(outdir_path)) if result.overlay_path else None,
-            'tags': [
-                {
-                    'id': det.marker_id,
-                    'row': det.row,
-                    'col': det.col,
-                    'center': det.center,
-                    'area': det.area,
-                }
-                for det in result.detections
-            ]
-        }
-        board_grids.append(grid_info)
-
-        if i == 0 and result.overlay_path:
-            shutil.copy(result.overlay_path, debug_dir / "tag_overlay.png")
-
-    print(f"识别了 {len(board_grids)} 个局面状态")
-
-    print("\n=== 步骤4: 基于ID的走法推断 ===")
-    repo_root = Path(__file__).resolve().parents[2]
-    piece_map_path = repo_root / "config" / "piece_id_map.json"
-    piece_map = load_piece_id_map(piece_map_path)
-
-    board_ids_path = debug_dir / "board_ids.json"
-    with open(board_ids_path, 'w', encoding='utf-8') as f:
-        json.dump({'piece_map': piece_map, 'frames': board_grids}, f, indent=2, ensure_ascii=False)
-    print(f"board_ids.json 已保存: {board_ids_path}")
-
-    moves, move_debug = infer_moves_from_id_grids(
-        board_grids=board_grids,
-        piece_map=piece_map,
-        output_dir=debug_dir
-    )
-
-    move_debug_path = debug_dir / "move_trace.json"
-    move_debug_path.write_text(json.dumps(move_debug, indent=2, ensure_ascii=False), encoding='utf-8')
-
-=======
-    print("\n=== 步骤3: 棋子识别 (Tag模式) ===")
+    print("\n=== 步骤3: 棋子识别 ===")
     board_states = []
+    cells_dir = debug_dir / "cells"
+    cells_dir.mkdir(exist_ok=True)
     
     for i, (frame_path, warped) in enumerate(warped_boards):
-        # 使用标签检测
         if use_piece_tags:
             state = detect_pieces_tags(
                 warped_board=warped,
                 frame_idx=i,
-                output_dir=str(tag_overlays_dir),
-                tag_family='apriltag36h11' # 默认
+                output_dir=str(tag_overlays_dir)
             )
         else:
-            # Fallback to visual occupancy (deprecated but kept)
-            state, _ = detect_pieces_auto_calibrate(
+            state = detect_pieces(
                 warped_board=warped,
                 frame_idx=i,
-                output_dir=str(debug_dir / "cells"),
-                calibration_data=None
+                output_dir=str(cells_dir)
             )
-            
         board_states.append(state)
     
-    # 保存 ID 矩阵用于 debug
+    # 保存 ID 矩阵用于 debug 和前端显示
     board_ids_path = debug_dir / "board_ids.json"
-    with open(board_ids_path, 'w', encoding='utf-8') as f:
-         # Extract just the ID grids
-         id_grids = [s.get('piece_ids', []) for s in board_states]
-         json.dump(id_grids, f, indent=2)
-         
+    if use_piece_tags:
+        id_grids = [s.get('piece_ids', []) for s in board_states]
+        with open(board_ids_path, 'w', encoding='utf-8') as f:
+            json.dump(id_grids, f, indent=2)
+    else:
+        # 如果不使用标签，则不生成该文件，并在后面调用时传 None
+        board_ids_path = None
+
     print(f"识别了 {len(board_states)} 个局面状态")
     
-    print("\n=== 步骤4: 走法解码 (ID映射) ===")
-    # TODO: Switch to decode_moves_from_tags if using tags
-    # For now, we need to implement decode_moves_from_tags in decode.py
-    # or adapt decode_moves to handle ID grids.
-    
-    # Placeholder: if using tags, we need a new decoding function
+    print("\n=== 步骤4: 走法解码 ===")
     if use_piece_tags:
-         from .decode import decode_moves_from_tags
-         moves, confidence = decode_moves_from_tags(
+        moves, confidence = decode_moves_from_tags(
             board_states=board_states,
+            initial_fen=None,
             output_dir=str(debug_dir)
-         )
+        )
     else:
         moves, confidence = decode_moves(
             board_states=board_states,
-            initial_fen=None,
+            initial_fen=None,  # 默认标准初始局面
             output_dir=str(debug_dir)
         )
     
@@ -202,7 +137,6 @@ def analyze_video(
     with open(confidence_path, 'w', encoding='utf-8') as f:
         json.dump(confidence, f, indent=2, ensure_ascii=False)
     
->>>>>>> eb1bad1 (Milestone 2: Tag-based piece recognition and Web UI updates)
     print(f"解码出 {len(moves)} 步走法")
     uncertain_moves = [i for i, m in enumerate(moves) if m == "??"]
     if uncertain_moves:
@@ -249,8 +183,8 @@ def analyze_video(
         pgn_path=str(pgn_path),
         analysis_path=str(analysis_path),
         output_path=str(outdir_path / "index.html"),
-        confidence=None,
-        tag_board_path=str(board_ids_path)
+        confidence=confidence,
+        tag_board_path=str(board_ids_path) if board_ids_path else None
     )
     print(f"网页复盘已生成: {html_path}")
     

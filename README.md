@@ -12,6 +12,19 @@
 - 🔧 **纠错机制**：低置信度走法可手动修正
 - 🏷️ **棋子贴码识别**：支持1-32号棋子贴纸，逐帧还原piece_id网格并解码走法
 
+## Beginner: 3 steps to run
+
+1. **Install once**（建议新建虚拟环境）：
+   ```bash
+   pip install -r requirements_computer.txt
+   pip install -r requirements_dashboard.txt
+   ```
+2. **一键启动本地仪表盘**：
+   ```bash
+   ./scripts/start_dashboard.sh
+   ```
+3. **浏览器里完成所有操作**：上传视频 → 选择 Marker / Tag 模式 → 点击 Run。所有输出会自动落盘到 `out/runs/<时间戳>/`，包含输入视频、副本、调试图、game.pgn、analysis.json、index.html、CHECK.html/TAG_CHECK.html。
+
 ## 快速开始
 
 ### 全新本地仪表盘（推荐）
@@ -28,11 +41,11 @@ streamlit run dashboard_local/app.py
 
 - **Upload & Run**：上传 mp4/mov，选择 Marker Mode（仅四角）或 Tag Mode（棋子标签），可调 FPS 采样、稳定阈值、标签灵敏度，点击 Run 即刻执行原有 CLI 流程。
 - **Results / Replay**：自动展示稳定帧、warp、grid_overlay.png、aruco_preview.png；Tag 模式额外显示 tag_overlays、8×8 ID 表格、TAG_CHECK/CHECK 内嵌报告，并提供 PGN、board_ids.json、tag_metrics.csv、整包 ZIP 下载。
-- **History**：列出 `out/web_runs/` 内历史 run_id、输入名、PASS/FAIL，点击 Open 可跳转重播。
+- **History**：列出 `out/runs/` 内历史 run_id、输入名、PASS/FAIL，点击 Open 可跳转重播。
 
 ### Tag 模式入门
 
-- 运行命令：`python scripts/run_tag_demo.py --input your_video.mp4 --outdir out/web_runs/<run_id>`（或通过 Dashboard 选择 Tag Mode）。
+- 运行命令：`python scripts/run_tag_demo.py --input your_video.mp4 --outdir out/runs/<run_id>`（或通过 Dashboard 选择 Tag Mode）。
 - 关键输出：`TAG_CHECK.html`（首帧角点=4 且唯一 ID ≥28 视为 PASS）、`board_ids.json`、`debug/tag_metrics.csv`、`debug/tag_overlay.png`/`tag_overlay_zoom.png`/`tag_grid.png`/`tag_missing_ids.txt`。
 - 可视化说明：
   - **tag_overlay.png**：warp 棋盘上叠加网格和检测到的 ID；`tag_overlay_zoom.png` 为 2× 放大。
@@ -45,6 +58,7 @@ streamlit run dashboard_local/app.py
 - 机位：保持四角 ArUco 0/1/2/3 全入镜，俯拍或轻微斜角；避免强反光。
 - 标签尺寸：3mm–5mm 贴纸均可；若 TAG_CHECK 报“小于期望像素”则需要更高分辨率或靠近镜头。
 - 光照：使用柔光或漫反射，必要时给棋子加磨砂罩；画面过曝会自动启用阈值路径但准确度下降。
+- 金属棋子反光：若棋子表面是金属或高亮材质，请使用柔光箱/白纸反射补光，尽量避免直射；可在顶部加磨砂胶贴减少反光，以免标签识别失败。
 
 ### 棋子贴码识别版（Tag 模式）
 
@@ -53,17 +67,30 @@ streamlit run dashboard_local/app.py
 **一键命令（含 TAG_CHECK.html 报告）**
 
 ```bash
-python scripts/run_tag_demo.py --input your_game.mp4 --outdir out/web_runs/demo --fps 3
+python scripts/run_tag_demo.py --input your_game.mp4 --outdir out/runs/demo --fps 3
 ```
 
 输出目录会包含：
 
 - `TAG_CHECK.html`：汇总 PASS/FAIL（四角==4 且首帧唯一 ID ≥28）、指标表格与关键叠加图。
 - `board_ids.json`：每个稳定帧的 8x8 piece_id 矩阵（根目录 & debug 下各一份）。
-- `debug/tag_metrics.csv`：逐帧 corner/tag 计数与置信标记（首帧 <20 个唯一 ID 会标记 LOW_CONFIDENCE）。
+- `debug/tag_metrics.csv`：逐帧 `frame_index,corners_detected,num_piece_tags,num_unique_ids,confidence_flag`，自动提示 NO_CORNERS/LOW_TAGS/DUPLICATE_IDS。
 - `debug/tag_overlay_0001.png`、`tag_overlay_zoom_0001.png`、`tag_grid_0001.png`、`tag_missing_ids_0001.txt`：首帧可视化包，前 5 帧依次编号。
 - `debug/tag_overlays/overlay_xxxx.png`：每帧 warp 上叠加的网格+ID 预览。
 - （可选）`game.pgn`、`debug/step_confidence.json`：若解码成功则自动生成。
+
+## 如何解读 TAG_CHECK.html / CHECK.html
+
+- **TAG_CHECK.html（Tag 模式）**
+  - PASS 规则：首帧 `corners_detected == 4` 且 `unique_ids >= 28`。
+  - 页面会展示：首帧稳定图 / warp / grid overlay、前 1-5 张 tag overlay 预览、8×8 ID 表格、缺失的标签列表 (1..32)、`debug/tag_metrics.csv` 逐帧统计。
+  - “Diagnostics” 区会自动给出失败原因：
+    - 角点缺失：提醒重新摆放/避免裁切/检查光照；
+    - 标签过少：估算像素尺寸并建议使用 5mm 标签、降低机位或补光；
+    - 重复 ID：提示更换重复贴纸。
+- **CHECK.html（Marker 模式）**
+  - PASS 关注点：`grid_overlay.png` 与棋盘格对齐、`aruco_preview.png` 检出 4 个角标。
+  - 若 FAIL，会提示角标缺失/透视失败，建议重新录制或调整机位。
 
 **录制与摆放建议（3-5mm 标签）**
 
@@ -119,7 +146,7 @@ streamlit run dashboard_local/app.py
 ```
 
 3) 浏览器操作
-- 侧边栏自动读取 `out/web_runs/<run_id>` 历史任务：显示输入文件名、时间戳和 PASS/FAIL 状态，点击即可切换。
+- 侧边栏自动读取 `out/runs/<run_id>` 历史任务：显示输入文件名、时间戳和 PASS/FAIL 状态，点击即可切换。
 - 主界面上传 .mp4/.mov，选择模式：
   - **Marker mode**：仅四角 0/1/2/3 warp，调用 `run_debug_pipeline.py` + `make_check_report.py`，生成 CHECK.html。
   - **Tag mode**：角点 + 1..32 棋子标签，调用 `run_tag_demo.py`，生成 TAG_CHECK.html、board_ids.json、tag_metrics.csv、可下载 PGN/ZIP。

@@ -67,7 +67,7 @@ def main():
         '--outdir', '-o',
         type=str,
         default=None,
-        help='输出目录（如果不指定，自动生成到runs/<run_id>/）'
+        help='输出目录（如果不指定，自动生成到 out/runs/<run_id>/）'
     )
     parser.add_argument(
         '--use_markers',
@@ -100,10 +100,26 @@ def main():
     print(f"使用视频文件: {video_path}")
     
     # 创建输出目录
-    outdir = Path(args.outdir)
+    if args.outdir:
+        outdir = Path(args.outdir)
+    else:
+        from datetime import datetime
+        outdir = Path("out/runs") / datetime.now().strftime("%Y%m%d_%H%M%S")
+
     outdir.mkdir(parents=True, exist_ok=True)
     debug_dir = outdir / "debug"
     debug_dir.mkdir(exist_ok=True)
+
+    # 保存输入视频副本，便于复现
+    try:
+        import shutil
+
+        input_copy = outdir / f"input{Path(video_path).suffix or '.mp4'}"
+        if not input_copy.exists():
+            shutil.copy(video_path, input_copy)
+            print(f"已保存输入视频副本: {input_copy}")
+    except Exception:
+        pass
     
     use_markers = bool(args.use_markers)
     

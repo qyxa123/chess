@@ -32,22 +32,25 @@ ENV/
 *.swo
 *~
 
-# Output directories (测试输出不上传)
+# Output directories
 out/
 output/
 web_replays/
 templates/
 recordings/
 debug/
+runs/
 
-# Video files (测试视频不上传)
+# Video files
 *.mp4
 *.mov
+*.MOV
 *.avi
 *.mkv
 
-# Analysis outputs (测试结果不上传)
-# 但保留代码生成的示例文件
+# Analysis outputs
+*.pgn
+# Keep example PGNs
 !examples/*.pgn
 !examples/*.json
 
@@ -57,3 +60,5 @@ debug/
 # Stockfish (if included)
 stockfish
 
+# IDE
+.cursor/

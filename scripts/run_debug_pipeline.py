@@ -66,8 +66,8 @@ def main():
     parser.add_argument(
         '--outdir', '-o',
         type=str,
-        required=True,
-        help='输出目录'
+        default=None,
+        help='输出目录（如果不指定，自动生成到runs/<run_id>/）'
     )
     parser.add_argument(
         '--use_markers',

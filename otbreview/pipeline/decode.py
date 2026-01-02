@@ -12,6 +12,201 @@ from typing import List, Dict, Tuple, Optional
 import numpy as np
 
 
+def decode_moves_from_tags(
+    board_states: List[Dict],
+    initial_fen: Optional[str] = None,
+    output_dir: Optional[str] = None
+) -> Tuple[List[str], List[Dict]]:
+    """
+    使用 Tag ID 解码走法
+    
+    1. 从第一帧推断 ID->Piece 的映射 (假设标准开局)
+    2. 逐步对比 ID 变化，匹配最佳 Legal Move
+    """
+    if initial_fen:
+        board = chess.Board(initial_fen)
+    else:
+        board = chess.Board()
+        
+    moves_san = []
+    confidence_list = []
+    
+    # 1. 推断映射
+    # 假设第一帧是初始状态（或接近初始状态）
+    # 我们建立 ID -> PieceType 的映射 (e.g. 5 -> White Pawn)
+    # 注意：这里只映射到类型，无法区分具体的兵，但对于验证足够了
+    # 更严格的：我们其实可以追踪每个 ID 的位置，但简单起见，我们主要利用"ID的一致性"
+    first_state_ids = np.array(board_states[0]['piece_ids'])
+    id_map = _infer_id_mapping(first_state_ids, board)
+    
+    if output_dir:
+        try:
+            mapping_debug = {str(k): v.symbol() for k, v in id_map.items()}
+            with open(Path(output_dir) / "id_mapping.json", 'w') as f:
+                json.dump(mapping_debug, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Failed to save id_mapping.json: {e}")
+            
+    # 2. 迭代解码
+    for i in range(1, len(board_states)):
+        prev_ids = np.array(board_states[i-1]['piece_ids'])
+        curr_ids = np.array(board_states[i]['piece_ids'])
+        
+        best_move, score, candidates = _find_best_move_tags(
+            board, prev_ids, curr_ids, id_map
+        )
+        
+        if best_move:
+            san = board.san(best_move)
+            board.push(best_move)
+            moves_san.append(san)
+            confidence_list.append({
+                'uncertain': False, 
+                'score': float(score), 
+                'candidates': [
+                    {'move': board.san(c['move']) if c['move'] != best_move else san, 'score': float(c['score'])}
+                    for c in candidates
+                ]
+            })
+        else:
+            moves_san.append("??")
+            confidence_list.append({
+                'uncertain': True, 
+                'reason': 'no_matching_move', 
+                'score': 0.0,
+                'candidates': []
+            })
+            
+    return moves_san, confidence_list
+
+
+def _infer_id_mapping(ids_grid: np.ndarray, board: chess.Board) -> Dict[int, chess.Piece]:
+    """建立 Tag ID 到棋子类型的映射"""
+    mapping = {}
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            row = 7 - chess.square_rank(square)
+            col = chess.square_file(square)
+            
+            tag_id = ids_grid[row, col]
+            if tag_id != 0:
+                mapping[tag_id] = piece
+    return mapping
+
+
+def _find_best_move_tags(
+    board: chess.Board, 
+    prev_ids: np.ndarray, 
+    curr_ids: np.ndarray, 
+    id_map: Dict[int, chess.Piece]
+) -> Tuple[Optional[chess.Move], float, List[Dict]]:
+    """
+    找到最匹配 ID 变化的合法走法
+    """
+    legal_moves = list(board.legal_moves)
+    if not legal_moves:
+        return None, 0.0, []
+        
+    candidates = []
+    
+    for move in legal_moves:
+        score = _score_move_tags(move, board, prev_ids, curr_ids, id_map)
+        candidates.append({'move': move, 'score': score})
+        
+    # 分数越高越好
+    candidates.sort(key=lambda x: x['score'], reverse=True)
+    
+    if candidates:
+        return candidates[0]['move'], candidates[0]['score'], candidates[:3]
+    return None, 0.0, []
+
+
+def _score_move_tags(
+    move: chess.Move, 
+    board: chess.Board, 
+    prev_ids: np.ndarray, 
+    curr_ids: np.ndarray, 
+    id_map: Dict[int, chess.Piece]
+) -> float:
+    """
+    为走法打分
+    逻辑：
+    1. 移动源位置应该变空 (0)
+    2. 移动目标位置应该出现源位置的 ID
+    3. 如果源位置 ID 丢失，检查目标位置 ID 是否匹配棋子类型
+    """
+    from_sq = move.from_square
+    to_sq = move.to_square
+    
+    r1, c1 = 7 - chess.square_rank(from_sq), chess.square_file(from_sq)
+    r2, c2 = 7 - chess.square_rank(to_sq), chess.square_file(to_sq)
+    
+    prev_id_at_src = prev_ids[r1, c1]
+    curr_id_at_dst = curr_ids[r2, c2]
+    curr_id_at_src = curr_ids[r1, c1]
+    
+    score = 0.0
+    
+    # 规则 1: 源位置应该变空
+    if curr_id_at_src == 0:
+        score += 10.0
+    elif curr_id_at_src == prev_id_at_src:
+        # 没动？那是扣分项
+        score -= 50.0
+        
+    # 规则 2: 目标位置应该出现正确的 ID
+    if prev_id_at_src != 0:
+        # 如果我们知道是谁在移动
+        if curr_id_at_dst == prev_id_at_src:
+            score += 100.0  # 完美匹配 ID
+        elif curr_id_at_dst == 0:
+            # 移动后不见了？可能是遮挡，或者是检测失败
+            score -= 10.0
+        else:
+            # 出现了别的 ID？
+            # 可能是吃子，但吃子应该是吃掉别人的 ID，自己站上去
+            # 所以这里必须是自己的 ID
+            score -= 50.0
+    else:
+        # 如果源位置没检测到 ID (0)
+        # 我们检查目标位置的 ID 是否匹配棋子类型
+        moving_piece = board.piece_at(from_sq)
+        if curr_id_at_dst != 0 and curr_id_at_dst in id_map:
+            mapped_piece = id_map[curr_id_at_dst]
+            if mapped_piece.piece_type == moving_piece.piece_type and mapped_piece.color == moving_piece.color:
+                score += 50.0 # 类型匹配
+            else:
+                score -= 20.0 # 类型不匹配
+                
+    # 规则 3: 特殊移动 (Castling)
+    if board.is_castling(move):
+        # 检查车的位置
+        if to_sq == chess.G1: # White O-O, Rook h1 -> f1
+            rook_r1, rook_c1 = 7, 7
+            rook_r2, rook_c2 = 7, 5
+        elif to_sq == chess.C1: # White O-O-O, Rook a1 -> d1
+            rook_r1, rook_c1 = 7, 0
+            rook_r2, rook_c2 = 7, 3
+        elif to_sq == chess.G8: # Black O-O, Rook h8 -> f8
+            rook_r1, rook_c1 = 0, 7
+            rook_r2, rook_c2 = 0, 5
+        elif to_sq == chess.C8: # Black O-O-O, Rook a8 -> d8
+            rook_r1, rook_c1 = 0, 0
+            rook_r2, rook_c2 = 0, 3
+        else:
+            rook_r1, rook_c1 = 0, 0
+            rook_r2, rook_c2 = 0, 0
+            
+        rook_id = prev_ids[rook_r1, rook_c1]
+        curr_rook_dst = curr_ids[rook_r2, rook_c2]
+        
+        if rook_id != 0 and curr_rook_dst == rook_id:
+            score += 50.0
+            
+    return score
+
+
 def decode_moves_from_states(
     board_states: List[Dict],
     initial_fen: Optional[str] = None,

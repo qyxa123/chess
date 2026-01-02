@@ -12,6 +12,125 @@ from typing import Dict, List, Tuple, Optional
 import json
 
 
+def detect_pieces_tags(
+    warped_board: np.ndarray,
+    frame_idx: int,
+    output_dir: str,
+    tag_family: str = 'apriltag36h11'
+) -> Dict[str, any]:
+    """
+    使用 ArUco/AprilTag 检测棋子 ID
+    
+    Args:
+        warped_board: 800x800 矫正后的棋盘图
+        frame_idx: 帧索引
+        output_dir: 输出目录
+        tag_family: 标签系列 (apriltag36h11, aruco4x4, etc)
+        
+    Returns:
+        board_state: {
+            'piece_ids': [[id, ...], ...],  # 8x8 matrix of detected IDs (0 if none)
+            'piece_centers': [[(x,y), ...], ...], # Centers for debug
+            'tag_detections': list of raw detection dicts
+        }
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # 初始化检测器
+    if 'aruco' in tag_family.lower():
+        if '4x4' in tag_family:
+            dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        elif '5x5' in tag_family:
+            dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
+        else:
+            dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_ORIGINAL)
+    else:
+        # Default to AprilTag 36h11
+        try:
+            dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+        except AttributeError:
+            dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+
+    parameters = cv2.aruco.DetectorParameters()
+    detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+    
+    # 灰度化
+    gray = cv2.cvtColor(warped_board, cv2.COLOR_BGR2GRAY)
+    
+    # 检测标记
+    corners, ids, rejected = detector.detectMarkers(gray)
+    
+    # 初始化 8x8 网格
+    piece_ids_map = np.zeros((8, 8), dtype=int)
+    piece_centers_map = [[None for _ in range(8)] for _ in range(8)]
+    raw_detections = []
+    
+    h, w = warped_board.shape[:2]
+    cell_h = h / 8.0
+    cell_w = w / 8.0
+    
+    # 可视化图
+    vis_img = warped_board.copy()
+    
+    if ids is not None:
+        ids = ids.flatten()
+        
+        for i, (corner, tag_id) in enumerate(zip(corners, ids)):
+            # 计算中心点
+            c = corner[0]
+            center_x = int(np.mean(c[:, 0]))
+            center_y = int(np.mean(c[:, 1]))
+            
+            # 计算面积（用于去重，取最大）
+            area = cv2.contourArea(c)
+            
+            # 映射到格子坐标 (row, col)
+            # y对应row, x对应col
+            row = int(center_y / cell_h)
+            col = int(center_x / cell_w)
+            
+            # 边界检查
+            if 0 <= row < 8 and 0 <= col < 8:
+                # 记录检测结果
+                detection = {
+                    'id': int(tag_id),
+                    'center': (center_x, center_y),
+                    'row': row,
+                    'col': col,
+                    'area': area
+                }
+                raw_detections.append(detection)
+                
+                # 填入网格（简单的冲突处理：如果已有ID，保留面积更大的？）
+                # 目前先简单覆盖，或者检查是否已经有ID
+                current_id = piece_ids_map[row, col]
+                if current_id == 0:
+                    piece_ids_map[row, col] = int(tag_id)
+                    piece_centers_map[row][col] = (center_x, center_y)
+                else:
+                    # 冲突处理：TODO
+                    # 暂时保留ID
+                    pass
+            
+            # 画框
+            cv2.aruco.drawDetectedMarkers(vis_img, corners, ids)
+
+    # 保存可视化图
+    debug_vis_path = output_path / f"tag_overlay_{frame_idx:04d}.png"
+    cv2.imwrite(str(debug_vis_path), vis_img)
+    
+    # 如果是第一帧，额外保存一份方便查看
+    if frame_idx == 0:
+        cv2.imwrite(str(output_path.parent / "tag_overlay_first.png"), vis_img)
+
+    return {
+        'piece_ids': piece_ids_map.tolist(),
+        'piece_centers': piece_centers_map,
+        'tag_detections': raw_detections
+    }
+
+
 def detect_pieces_two_stage(
     warped_board: np.ndarray,
     frame_idx: int,
@@ -45,11 +164,11 @@ def detect_pieces_two_stage(
     
     # 保存第一帧warped图
     if frame_idx == 0 and debug:
-        cv2.imwrite(str(output_path / "board_first_warp.png"), warped)
+        cv2.imwrite(str(output_path / "board_first_warp.png"), warped_board)
     
     # Phase A: piece vs empty
     piece_mask, diff_heatmap, edge_heatmap, metrics = _phase_a_piece_empty(
-        warped_board=warped,
+        warped_board=warped_board,
         frame_idx=frame_idx,
         output_path=output_path,
         patch_ratio=patch_ratio,
@@ -61,7 +180,7 @@ def detect_pieces_two_stage(
     
     # Phase B: light vs dark（只在piece格）
     occupancy, labels, confidence = _phase_b_light_dark(
-        warped_board=warped,
+        warped_board=warped_board,
         piece_mask=piece_mask,
         frame_idx=frame_idx,
         output_path=output_path,
@@ -476,29 +595,4 @@ def detect_pieces_auto_calibrate(
         debug=False
     )
     
-    if result is None:
-        return {}, None
-    
-    return result, None
-
-
-def detect_pieces(
-    warped_board: np.ndarray,
-    frame_idx: int,
-    output_dir: str
-) -> Dict[str, any]:
-    """
-    检测棋盘上的棋子（兼容旧接口）
-    """
-    result = detect_pieces_two_stage(
-        warped_board=warped_board,
-        frame_idx=frame_idx,
-        output_dir=output_dir,
-        patch_ratio=0.40,
-        debug=False
-    )
-    
-    if result is None:
-        return {'occupancy': [[0]*8]*8, 'confidence': [[0.0]*8]*8, 'labels': [['empty']*8]*8}
-    
-    return result
+    return result, None  # Returns result and no extra state for now

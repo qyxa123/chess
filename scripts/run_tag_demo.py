@@ -15,8 +15,12 @@ from typing import Any, Dict, List, Tuple
 from otbreview.pipeline.board_detect import detect_and_warp_board_debug
 from otbreview.pipeline.decode import decode_moves_from_tags
 from otbreview.pipeline.extract import extract_stable_frames_debug
-from otbreview.pipeline.pgn import generate_pgn
+from otbreview.pipeline.pgn import generate_pgn, generate_moves_json
 from otbreview.pipeline.pieces import detect_pieces_tags
+from otbreview.pipeline.analyze import analyze_game
+from otbreview.pipeline.classify import classify_moves
+from otbreview.pipeline.keymoves import find_key_moves
+from otbreview.web.generate import generate_web_replay
 
 
 def _default_run_dir() -> Path:
@@ -29,7 +33,7 @@ def _default_run_dir() -> Path:
 
 
 def _copy_input(input_path: Path, run_dir: Path) -> Path:
-    dest = run_dir / f"input{input_path.suffix or '.mp4'}"
+    dest = run_dir / f"input_video{input_path.suffix or '.mp4'}"
     if not dest.exists():
         dest.write_bytes(input_path.read_bytes())
     return dest
@@ -56,12 +60,17 @@ def _write_metrics(
     debug_dir: Path,
 ) -> Path:
     metrics_path = debug_dir / "tag_metrics.csv"
-    rows = ["frame_index,corners_detected,num_piece_tags,num_unique_ids,confidence_flag"]
+    rows = ["frame_index,corners_detected,num_piece_tags,num_unique_ids,coverage_ratio,confidence_flag"]
     for idx, state in enumerate(board_states):
         detections = state.get("tag_detections", [])
         tags = [d.get("marker_id") for d in detections]
         unique = len(set(tags))
         corners = corner_counts[idx] if idx < len(corner_counts) else 0
+        grid = state.get("piece_ids", [])
+        coverage_ratio = 0.0
+        if isinstance(grid, list) and grid:
+            flat_ids = [pid for row in grid for pid in row if pid]
+            coverage_ratio = len(set(flat_ids)) / 32.0 if flat_ids else 0.0
         flag = ""
         if corners < 4:
             flag = "NO_CORNERS"
@@ -69,7 +78,7 @@ def _write_metrics(
             flag = "LOW_TAGS"
         elif len(tags) > unique:
             flag = "DUPLICATE_IDS"
-        rows.append(f"{idx},{corners},{len(tags)},{unique},{flag}")
+        rows.append(f"{idx},{corners},{len(tags)},{unique},{coverage_ratio:.4f},{flag}")
 
     metrics_path.write_text("\n".join(rows), encoding="utf-8")
     return metrics_path
@@ -296,12 +305,12 @@ def main() -> None:
     (run_dir / "board_ids.json").write_text(board_json, encoding="utf-8")
 
     print("[4/5] 解码PGN…")
+    moves: List[str] = []
+    confidence: List[Dict] = []
     try:
         moves, confidence = decode_moves_from_tags(board_states, output_dir=str(debug_dir))
         pgn = generate_pgn(moves)
         (run_dir / "game.pgn").write_text(pgn, encoding="utf-8")
-        from otbreview.pipeline.pgn import generate_moves_json
-
         moves_json = generate_moves_json(moves)
         (run_dir / "moves.json").write_text(json.dumps(moves_json, indent=2), encoding="utf-8")
         (debug_dir / "step_confidence.json").write_text(json.dumps(confidence, indent=2), encoding="utf-8")
@@ -329,6 +338,34 @@ def main() -> None:
         warnings=warnings,
     )
     print(f"完成: {run_dir/'TAG_CHECK.html'}")
+
+    # 生成分析与网页复盘
+    pgn_path = run_dir / "game.pgn"
+    if pgn_path.exists():
+        try:
+            analysis_raw = analyze_game(str(pgn_path))
+            classified = classify_moves(analysis=analysis_raw)
+            key_moves = find_key_moves(analysis=classified)
+            full_analysis = {
+                "moves": classified,
+                "keyMoves": key_moves,
+                "metadata": {
+                    "depth": 14,
+                    "pv_length": 6,
+                    "source": "tag_demo",
+                },
+            }
+            analysis_path = run_dir / "analysis.json"
+            analysis_path.write_text(json.dumps(full_analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+            generate_web_replay(
+                pgn_path=str(pgn_path),
+                analysis_path=str(analysis_path),
+                output_path=str(run_dir / "index.html"),
+                confidence=confidence,
+                tag_board_path=str(run_dir / "board_ids.json"),
+            )
+        except Exception as exc:  # pragma: no cover - 分析失败不阻断主流程
+            print(f"  分析/网页生成失败: {exc}")
 
 
 if __name__ == "__main__":

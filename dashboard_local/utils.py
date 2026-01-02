@@ -13,7 +13,7 @@ from typing import Dict, Generator, List, Optional, Tuple
 import chess
 import chess.pgn
 
-BASE_OUTDIR = Path("out/web_runs")
+BASE_OUTDIR = Path("out/runs")
 
 
 def ensure_base_outdir() -> Path:

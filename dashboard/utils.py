@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Generator, List, Optional, Tuple
 
-BASE_OUTDIR = Path("out/web_runs")
+BASE_OUTDIR = Path("out/runs")
 
 
 def ensure_outdir() -> Path:

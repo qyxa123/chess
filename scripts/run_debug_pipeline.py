@@ -7,6 +7,7 @@ import argparse
 import sys
 from pathlib import Path
 import os
+import json
 
 # 添加项目根目录到路径
 project_root = Path(__file__).parent.parent
@@ -114,10 +115,25 @@ def main():
     try:
         import shutil
 
-        input_copy = outdir / f"input{Path(video_path).suffix or '.mp4'}"
+        input_copy = outdir / f"input_video{Path(video_path).suffix or '.mp4'}"
         if not input_copy.exists():
             shutil.copy(video_path, input_copy)
             print(f"已保存输入视频副本: {input_copy}")
+    except Exception:
+        pass
+
+    # 标准化 run_meta
+    try:
+        from datetime import datetime
+
+        run_meta = {
+            "run_id": outdir.name,
+            "input_file": Path(video_path).name,
+            "mode": "Marker mode",
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "params": {"fps": args.fps, "use_markers": bool(args.use_markers)},
+        }
+        (outdir / "run_meta.json").write_text(json.dumps(run_meta, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
     

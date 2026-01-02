@@ -12,6 +12,9 @@ from dashboard.utils import load_board_sequences, load_json, run_history, write_
 from otbreview.pipeline.decode import decode_moves_from_tags
 from otbreview.pipeline.pgn import generate_pgn, generate_moves_json
 from otbreview.pipeline.analyze import analyze_game
+from otbreview.pipeline.classify import classify_moves
+from otbreview.pipeline.keymoves import find_key_moves
+from otbreview.web.generate import generate_web_replay
 
 st.title("Corrections")
 st.caption("Fix board IDs early, override moves, and regenerate outputs.")
@@ -31,6 +34,10 @@ def _save_override(board_states: List[List[List[int]]], selected_frame: int, edi
     payload[selected_frame] = edited_grid
     override_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return override_path, payload
+
+
+def _wrap_states(board_states: List[List[List[int]]]) -> List[dict]:
+    return [{"piece_ids": grid} for grid in board_states]
 
 
 def _render_board_editor(grid: List[List[int]]):
@@ -72,15 +79,28 @@ if st.button("Save board_ids_override.json and re-decode", type="primary"):
     override_path, payload = _save_override(board_states, frame_idx, edited_grid)
     st.success(f"Saved overrides to {override_path}")
     try:
-        moves, confidence = decode_moves_from_tags(payload[frame_idx:], output_dir=str(run_dir / "debug"))
+        wrapped_states = _wrap_states(payload)
+        moves, confidence = decode_moves_from_tags(wrapped_states[frame_idx:], output_dir=str(run_dir / "debug"))
         pgn = generate_pgn(moves)
         (run_dir / "game.pgn").write_text(pgn, encoding="utf-8")
         moves_json = generate_moves_json(moves)
         (run_dir / "moves.json").write_text(json.dumps(moves_json, indent=2), encoding="utf-8")
-        analysis = analyze_game(str(run_dir / "game.pgn"))
-        (run_dir / "analysis.json").write_text(json.dumps(analysis, indent=2), encoding="utf-8")
+        analysis_raw = analyze_game(str(run_dir / "game.pgn"))
+        classified = classify_moves(analysis=analysis_raw)
+        key_moves = find_key_moves(analysis=classified)
+        analysis = {"moves": classified, "keyMoves": key_moves, "metadata": {"source": "corrections"}}
+        analysis_path = run_dir / "analysis.json"
+        analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
+        board_path = override_path if override_path.exists() else run_dir / "board_ids.json"
+        generate_web_replay(
+            pgn_path=str(run_dir / "game.pgn"),
+            analysis_path=str(analysis_path),
+            output_path=str(run_dir / "index.html"),
+            confidence=confidence,
+            tag_board_path=str(board_path),
+        )
         write_run_metadata(run_dir, {**load_json(run_dir / "run_meta.json"), "override_from_frame": frame_idx})
-        st.success("Re-decoded moves and regenerated PGN/analysis.")
+        st.success("Re-decoded moves and regenerated PGN/analysis/index.html.")
     except Exception as exc:  # noqa: BLE001
         st.error(f"Re-decode failed: {exc}")
 
